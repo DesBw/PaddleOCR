@@ -231,9 +231,33 @@ def train(
     print_mem_info = config["Global"].get("print_mem_info", True)
     uniform_output_enabled = config["Global"].get("uniform_output_enabled", False)
 
-    global_step = 0
-    if "global_step" in pre_best_model_dict:
-        global_step = pre_best_model_dict["global_step"]
+    global_step = pre_best_model_dict.get("global_step", 0)
+    start_batch_idx = pre_best_model_dict.get("start_batch_idx", 0)
+
+    # Optimizer state dictionaries do not consistently include the LR scheduler
+    # state across Paddle versions. Advance a fresh scheduler to the checkpoint's
+    # global step so a resumed run keeps the original learning-rate schedule.
+    if not isinstance(lr_scheduler, float) and global_step > 0:
+        scheduler_step = getattr(lr_scheduler, "last_epoch", None)
+        steps_to_restore = (
+            max(0, global_step - scheduler_step)
+            if scheduler_step is not None
+            else global_step
+        )
+        for _ in range(steps_to_restore):
+            lr_scheduler.step()
+    if wd_scheduler is not None and global_step > getattr(wd_scheduler, "_step", 0):
+        for _ in range(global_step - wd_scheduler._step):
+            wd_scheduler.step()
+    if start_batch_idx:
+        logger.info(
+            "Resuming epoch {} after {} batches (global_step={})".format(
+                pre_best_model_dict.get("start_epoch", 1),
+                start_batch_idx,
+                global_step,
+            )
+        )
+
     start_eval_step = 0
     if isinstance(eval_batch_step, list) and len(eval_batch_step) >= 2:
         start_eval_step = eval_batch_step[0] if not eval_batch_epoch else 0
@@ -255,12 +279,28 @@ def train(
             )
         )
     save_epoch_step = config["Global"]["save_epoch_step"]
+    # Save a resumable checkpoint every N completed training batches. Disabled
+    # by default to preserve the historical epoch-only checkpoint behavior.
+    save_batch_step = int(config["Global"].get("save_batch_step", 0))
+    if save_batch_step < 0:
+        raise ValueError("Global.save_batch_step must be zero or a positive integer")
+    save_batch_keep = int(config["Global"].get("save_batch_keep", 3))
+    if save_batch_keep < 0:
+        raise ValueError("Global.save_batch_keep must be zero or a positive integer")
     save_model_dir = config["Global"]["save_model_dir"]
     if not os.path.exists(save_model_dir):
         os.makedirs(save_model_dir)
     main_indicator = eval_class.main_indicator
     best_model_dict = {main_indicator: 0}
-    best_model_dict.update(pre_best_model_dict)
+    # Resume coordinates are control state, not evaluation metrics; do not carry
+    # them into the nested best-model dictionary written at later epoch saves.
+    best_model_dict.update(
+        {
+            key: value
+            for key, value in pre_best_model_dict.items()
+            if key not in ("start_epoch", "start_batch_idx", "global_step")
+        }
+    )
     train_stats = TrainingStats(log_smooth_window, ["lr"])
     model_average = False
     model.train()
@@ -300,9 +340,7 @@ def train(
 
     algorithm = config["Architecture"]["algorithm"]
 
-    start_epoch = (
-        best_model_dict["start_epoch"] if "start_epoch" in best_model_dict else 1
-    )
+    start_epoch = pre_best_model_dict.get("start_epoch", 1)
 
     total_samples = 0
     train_reader_cost = 0.0
@@ -336,6 +374,13 @@ def train(
             train_reader_cost += time.time() - reader_start
             if idx >= max_iter:
                 break
+            # Recreate the epoch's sampler order and consume already-trained
+            # batches without applying gradients. This lets a checkpoint resume
+            # inside an epoch rather than silently treating it as a new epoch.
+            if epoch == start_epoch and idx < start_batch_idx:
+                train_reader_cost = 0.0
+                reader_start = time.time()
+                continue
             lr = optimizer.get_lr()
             images = batch[0]
             if use_srn:
@@ -612,7 +657,74 @@ def train(
                 if _ema_train_state is not None:
                     model.set_state_dict(_ema_train_state)
 
+            if (
+                save_batch_step > 0
+                and global_step % save_batch_step == 0
+                and dist.get_rank() == 0
+            ):
+                prefix = "iter_step_{}".format(global_step)
+                _ema_train_state_step = None
+                if ema is not None:
+                    _ema_train_state_step = copy.deepcopy(model.state_dict())
+                    model.set_state_dict(ema.apply())
+                save_model(
+                    model,
+                    optimizer,
+                    save_model_dir,
+                    logger,
+                    config,
+                    is_best=False,
+                    prefix=prefix,
+                    ema=ema,
+                    train_state=_ema_train_state_step,
+                    best_model_dict=best_model_dict,
+                    epoch=epoch,
+                    batch_idx=idx + 1,
+                    global_step=global_step,
+                )
+                if _ema_train_state_step is not None:
+                    model.set_state_dict(_ema_train_state_step)
+                logger.info(
+                    "Saved resumable checkpoint after epoch {}, batch {}: {}".format(
+                        epoch, idx + 1, os.path.join(save_model_dir, prefix)
+                    )
+                )
+                # Keep the newest complete checkpoint bundles by default. Prune
+                # only after the new checkpoint (including its .states marker)
+                # has been written, so an interrupted save leaves prior copies.
+                if save_batch_keep > 0:
+                    complete_step_checkpoints = []
+                    for filename in os.listdir(save_model_dir):
+                        if not filename.startswith("iter_step_") or not filename.endswith(
+                            ".states"
+                        ):
+                            continue
+                        checkpoint_prefix = filename[: -len(".states")]
+                        try:
+                            checkpoint_step = int(checkpoint_prefix.rsplit("_", 1)[1])
+                        except ValueError:
+                            continue
+                        if all(
+                            os.path.exists(
+                                os.path.join(save_model_dir, checkpoint_prefix + suffix)
+                            )
+                            for suffix in (".pdparams", ".pdopt")
+                        ):
+                            complete_step_checkpoints.append(
+                                (checkpoint_step, checkpoint_prefix)
+                            )
+                    complete_step_checkpoints.sort()
+                    for _, old_prefix in complete_step_checkpoints[
+                        : -save_batch_keep
+                    ]:
+                        for suffix in (".pdparams", ".pdopt", ".states", ".pdema"):
+                            old_path = os.path.join(save_model_dir, old_prefix + suffix)
+                            if os.path.exists(old_path):
+                                os.remove(old_path)
+
             reader_start = time.time()
+        # Only the first epoch after a mid-epoch resume has batches to skip.
+        start_batch_idx = 0
         if dist.get_rank() == 0:
             prefix = "latest"
             # Apply EMA weights for save
