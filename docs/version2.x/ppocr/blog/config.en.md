@@ -26,7 +26,9 @@ Take rec_chinese_lite_train_v2.0.yml as an example
 |      log_smooth_window   |    Log queue length, the median value in the queue each time will be printed           |       20          |                \                 |
 |      print_batch_step    |    Set print log interval         |       10          |                \                 |
 |      save_model_dir      |    Set model save path        |  output/{算法名称}  |                \                 |
-|      save_epoch_step     |    Set model save interval        |       3           |                \                 |
+|      save_epoch_step     |    Set model save interval in epochs        |       3           |                \                 |
+|      save_batch_step     |    Save resumable checkpoints every N training batches (0 disables)        |       0           | Creates `iter_step_N` checkpoints that can resume mid-epoch |
+|      save_batch_keep     |    Number of complete step checkpoints to retain (0 keeps all)        |       3           | Old step checkpoints are pruned only after a new one is complete |
 |      eval_batch_step     |    Set the model evaluation interval        | 2000 or [1000, 2000]        | running evaluation every 2000 iters or evaluation is run every 2000 iterations after the 1000th iteration   |
 |      cal_metric_during_train     |    Set whether to evaluate the metric during the training process. At this time, the metric of the model under the current batch is evaluated        |       true         |                \                 |
 |      load_static_weights     |   Set whether the pre-training model is saved in static graph mode (currently only required by the detection algorithm)        |       true         |                \                 |

@@ -460,7 +460,17 @@ output/rec/
 └── train.log
 ```
 
-Among them, best_accuracy._is the best model on the evaluation set; iter_epoch_x._ is the model saved at intervals of `save_epoch_step`; latest.* is the model of the last epoch.
+Among them, `best_accuracy.*` is the best model on the evaluation set; `iter_epoch_x.*` is the model saved at intervals of `save_epoch_step`; `latest.*` is the model of the last epoch.
+
+For long runs, set `Global.save_batch_step` to a positive number to also save resumable checkpoints every that many training batches. For example, `save_batch_step: 1000` creates `iter_step_1000.*`, `iter_step_2000.*`, and so on. Resume from one by setting `Global.checkpoints` to its prefix (without the file extension) and `Global.pretrained_model: null`, for example:
+
+```bash
+python3 tools/train.py -c path/to/your_amharic_rec.yml \
+  -o Global.checkpoints=./output/rec_amharic_v4/iter_step_2000 \
+     Global.pretrained_model=null
+```
+
+The resume point includes model weights, optimizer state, epoch, batch position, and global step. Keep the training data, its order/shuffle configuration, batch size, and optimizer configuration unchanged when resuming. A step checkpoint is a full training checkpoint, not an inference-only weight file. By default, the newest three complete step checkpoints are retained (`Global.save_batch_keep: 3`); set it to `0` to keep all of them. Older checkpoints are removed only after a new checkpoint is completely written, so a power loss during a save leaves prior completed copies available. `save_batch_step: 0` (the default) disables step checkpointing.
 
 ```bash linenums="1"
 # Predict English results

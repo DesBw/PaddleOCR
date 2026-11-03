@@ -26,7 +26,9 @@ comments: true
 |      log_smooth_window   |    log队列长度，每次打印输出队列里的中间值            |       20          |                \                 |
 |      print_batch_step    |    设置打印log间隔         |       10          |                \                 |
 |      save_model_dir      |    设置模型保存路径        |  output/{算法名称}  |                \                 |
-|      save_epoch_step     |    设置模型保存间隔        |       3           |                \                 |
+|      save_epoch_step     |    设置模型按epoch保存间隔        |       3           |                \                 |
+|      save_batch_step     |    每训练N个batch保存可恢复的checkpoint（0表示关闭）        |       0           | 生成`iter_step_N`，支持epoch中断点恢复 |
+|      save_batch_keep     |    保留完整step checkpoint数量（0表示全部保留）        |       3           | 新checkpoint完成写入后才清理旧文件 |
 |      eval_batch_step     |    设置模型评估间隔        | 2000 或 [1000, 2000]        | 2000 表示每2000次迭代评估一次，[1000， 2000]表示从1000次迭代开始，每2000次评估一次   |
 |      cal_metric_during_train     |    设置是否在训练过程中评估指标，此时评估的是模型在当前batch下的指标        |       true         |                \                 |
 |      load_static_weights     |   设置预训练模型是否是静态图模式保存(目前仅检测算法需要)        |       true         |                \                 |

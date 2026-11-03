@@ -488,6 +488,8 @@ output/rec/
 
 其中 best_accuracy.*是评估集上的最优模型；iter_epoch_x.* 是以 `save_epoch_step` 为间隔保存下来的模型；latest.* 是最后一个epoch的模型。
 
+长时间训练可以在配置中设置正整数 `Global.save_batch_step`，每训练指定数量的batch额外保存一个可恢复checkpoint，例如设置为1000会生成`iter_step_1000.*`、`iter_step_2000.*`等。断点恢复时，将 `Global.checkpoints` 指向checkpoint前缀（不含扩展名），并设置 `Global.pretrained_model: null`。恢复时请保持训练数据、数据顺序/打乱设置、batch大小和优化器配置一致。默认值0表示关闭按batch保存。
+
 ```bash linenums="1"
 # 预测英文结果
 python3 tools/infer_rec.py -c configs/rec/PP-OCRv3/en_PP-OCRv3_mobile_rec.yml -o Global.pretrained_model={path/to/weights}/best_accuracy  Global.infer_img=doc/imgs_words/en/word_1.png
